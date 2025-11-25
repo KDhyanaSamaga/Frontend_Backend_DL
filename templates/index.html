@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Wildlife Detection (YOLOv5)</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+        body {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: #111;
+            color: #f5f5f5;
+        }
+        h1 {
+            text-align: center;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        .card {
+            background: #1c1c1c;
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 8px 25px rgba(0,0,0,0.4);
+        }
+        .card h2 {
+            margin-top: 0;
+        }
+        .row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+        .col {
+            flex: 1;
+            min-width: 260px;
+        }
+        input[type="file"] {
+            margin-top: 8px;
+        }
+        button {
+            margin-top: 12px;
+            padding: 8px 16px;
+            border-radius: 999px;
+            border: none;
+            cursor: pointer;
+            font-weight: 600;
+            background: #00b894;
+            color: #fff;
+        }
+        button.secondary {
+            background: #0984e3;
+        }
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        #video, #output-media, #webcam-preview {
+            max-width: 100%;
+            border-radius: 12px;
+            margin-top: 12px;
+            background: #000;
+        }
+        #status {
+            margin-top: 10px;
+            font-size: 0.9rem;
+            color: #ffeaa7;
+        }
+        #detections-list {
+            margin-top: 10px;
+            font-size: 0.9rem;
+        }
+        code {
+            background: #2d3436;
+            padding: 2px 4px;
+            border-radius: 4px;
+        }
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: 0.75rem;
+            margin-right: 6px;
+            margin-bottom: 4px;
+            background: #2d3436;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>Wildlife Detection (Elephant / Leopard / Wild Boar)</h1>
+
+    <div class="card">
+        <h2>Upload Image / Video</h2>
+        <form id="upload-form">
+            <div>
+                <label for="file-input">Choose file (image or video)</label><br />
+                <input id="file-input" name="file" type="file" accept="image/*,video/*" />
+            </div>
+            <button type="submit">Run Detection</button>
+        </form>
+        <div id="upload-status" id="status"></div>
+    </div>
+
+    <div class="card">
+        <h2>Use Webcam</h2>
+        <div class="row">
+            <div class="col">
+                <video id="video" autoplay playsinline></video><br />
+                <button id="start-webcam" class="secondary">Start Webcam</button>
+                <button id="capture-webcam" disabled>Capture &amp; Detect</button>
+            </div>
+            <div class="col">
+                <canvas id="webcam-canvas" style="display:none;"></canvas>
+                <img id="webcam-preview" alt="Webcam snapshot will appear here" />
+            </div>
+        </div>
+        <div id="webcam-status" class="status"></div>
+    </div>
+
+    <div class="card">
+        <h2>Detection Result</h2>
+        <div id="status"></div>
+        <div id="output-container">
+            <img id="output-image" style="display:none;" />
+            <video id="output-video" style="display:none;" controls></video>
+        </div>
+        <div id="detections-list"></div>
+    </div>
+</div>
+
+<script>
+    const uploadForm = document.getElementById("upload-form");
+    const fileInput = document.getElementById("file-input");
+    const statusEl = document.getElementById("status");
+    const uploadStatusEl = document.getElementById("upload-status");
+    const detectionsListEl = document.getElementById("detections-list");
+    const outputImage = document.getElementById("output-image");
+    const outputVideo = document.getElementById("output-video");
+
+    const startWebcamBtn = document.getElementById("start-webcam");
+    const captureWebcamBtn = document.getElementById("capture-webcam");
+    const videoEl = document.getElementById("video");
+    const webcamCanvas = document.getElementById("webcam-canvas");
+    const webcamPreview = document.getElementById("webcam-preview");
+    const webcamStatusEl = document.getElementById("webcam-status");
+
+    let webcamStream = null;
+
+    function showStatus(msg, isError=false) {
+        statusEl.textContent = msg;
+        statusEl.style.color = isError ? "#ff7675" : "#ffeaa7";
+    }
+
+    function showUploadStatus(msg, isError=false) {
+        uploadStatusEl.textContent = msg;
+        uploadStatusEl.style.color = isError ? "#ff7675" : "#ffeaa7";
+    }
+
+    function showWebcamStatus(msg, isError=false) {
+        webcamStatusEl.textContent = msg;
+        webcamStatusEl.style.color = isError ? "#ff7675" : "#ffeaa7";
+    }
+
+    function renderDetections(detections) {
+        detectionsListEl.innerHTML = "";
+        if (!detections || detections.length === 0) {
+            detectionsListEl.textContent = "No objects detected.";
+            return;
+        }
+
+        const title = document.createElement("div");
+        title.textContent = "Detections:";
+        detectionsListEl.appendChild(title);
+
+        const list = document.createElement("div");
+        detections.forEach(det => {
+            const item = document.createElement("div");
+            item.className = "badge";
+            item.textContent = `${det.class} (${det.confidence})`;
+            list.appendChild(item);
+        });
+        detectionsListEl.appendChild(list);
+    }
+
+    function displayOutput(type, url) {
+        outputImage.style.display = "none";
+        outputVideo.style.display = "none";
+
+        if (type === "image") {
+            outputImage.src = url;
+            outputImage.style.display = "block";
+        } else if (type === "video") {
+            outputVideo.src = url;
+            outputVideo.style.display = "block";
+        }
+    }
+
+    async function sendDetectRequest(formData, source = "upload") {
+        showStatus("Running detection...", false);
+
+        try {
+            const response = await fetch("/detect", {
+                method: "POST",
+                body: formData
+            });
+
+            const data = await response.json();
+            if (!response.ok || data.status !== "success") {
+                const msg = data.message || "Detection failed";
+                showStatus("Error: " + msg, true);
+                return;
+            }
+
+            showStatus("Detection complete.");
+            displayOutput(data.type, data.output_url);
+            renderDetections(data.detections);
+        } catch (err) {
+            console.error(err);
+            showStatus("Error contacting server", true);
+        }
+    }
+
+    // ==========================
+    // Handle upload form submit
+    // ==========================
+    uploadForm.addEventListener("submit", function (e) {
+        e.preventDefault();
+
+        if (!fileInput.files || fileInput.files.length === 0) {
+            showUploadStatus("Please choose a file first.", true);
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append("file", fileInput.files[0]);
+
+        showUploadStatus("Uploading & processing...");
+        sendDetectRequest(formData, "upload").then(() => {
+            showUploadStatus("");
+        });
+    });
+
+    // ==========================
+    // Webcam handling
+    // ==========================
+
+    startWebcamBtn.addEventListener("click", async () => {
+        try {
+            webcamStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+            videoEl.srcObject = webcamStream;
+            showWebcamStatus("Webcam started.");
+            captureWebcamBtn.disabled = false;
+        } catch (err) {
+            console.error(err);
+            showWebcamStatus("Failed to access webcam. Check permissions.", true);
+        }
+    });
+
+    captureWebcamBtn.addEventListener("click", () => {
+        if (!webcamStream) {
+            showWebcamStatus("Webcam is not running.", true);
+            return;
+        }
+
+        const trackSettings = webcamStream.getVideoTracks()[0].getSettings();
+        const width = trackSettings.width || 640;
+        const height = trackSettings.height || 480;
+
+        webcamCanvas.width = width;
+        webcamCanvas.height = height;
+
+        const ctx = webcamCanvas.getContext("2d");
+        ctx.drawImage(videoEl, 0, 0, width, height);
+
+        const dataURL = webcamCanvas.toDataURL("image/jpeg");
+        webcamPreview.src = dataURL;
+
+        const formData = new FormData();
+        formData.append("webcam_image", dataURL);
+
+        showWebcamStatus("Sending snapshot for detection...");
+        sendDetectRequest(formData, "webcam").then(() => {
+            showWebcamStatus("Snapshot processed.");
+        });
+    });
+
+</script>
+</body>
+</html>
